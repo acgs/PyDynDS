@@ -36,60 +36,59 @@ class Model(object):
         self.messageDelay = message_delay
         self.computationCost = computation_cost
 
-
-    @property.getter
+    @property
     def dynDCOP(self):
         return self._dynDCOP
 
-    @property.setter
+    @dynDCOP.setter
     def dynDCOP(self, new_dyn_dcop=None):
         raise ValueError("dynDCOP is protected in Model. Change the setter property to allow modifications.")
 
-    @property.getter
+    @property
     def algorithm(self):
         return self._algorithm
 
-    @property.setter
+    @algorithm.setter
     def algorithm(self, new_algorithm=None):
         raise ValueError("algorithm is protected in Model. Change the setter property to allow modifications.")
 
-    @property.getter
+    @property
     def running(self):
         return self._running
 
-    @property.setter
+    @running.setter
     def running(self, new_state=False):
         raise ValueError("running is protected in Model. Change the setter property to allow modifications.")
 
-    @property.getter
+    @property
     def finished(self):
         return self._finished
 
-    @property.setter
+    @finished.setter
     def finished(self):
         raise ValueError("finished is protected in Model. Change the setter property to allow modifications.")
 
-    @property.getter
+    @property
     def currentCycle(self):
         return self._currentCycle
 
-    @property.setter
+    @currentCycle.setter
     def currentCycle(self, cycle_number=0):
         raise ValueError("currentCycle is protected in Model. Change the setter property to allow modifications.")
 
-    @property.getter
+    @property
     def lastMessageID(self):
         return self._lastMessageID
 
-    @property.setter
+    @lastMessageID.setter
     def lastMessageID(self, new_id=0):
         raise ValueError("lastMessageID is protected in Model. Change the setter property to allow modifications.")
 
-    @property.getter
+    @property
     def lastComputationID(self):
         return self._lastComputationID
 
-    @property.setter
+    @lastComputationID.setter
     def lastComputationID(self, new_id=0):
         raise ValueError("lastComputationID is protected in Model. Change the setter property to allow modifications.")
 
@@ -161,3 +160,7 @@ def _find_latest_start(new_items=()):
             last_first_cycle = message.startCycle
 
     return last_first_cycle
+
+
+if __name__ == "__main__":
+    pass
