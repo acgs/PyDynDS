@@ -16,3 +16,10 @@ class Message(object):
         self.source = source
         self.destination = destination
         self.data = data
+
+    def __str__(self):
+        return ''.join(['(', str(self.source), ', ', str(self.destination), ', ', str(self.data), ')'])
+
+    def __repr__(self):
+        return self.__str__()
+

@@ -8,13 +8,27 @@ import time
 
 from pydynds.common import Message, ViewUpdateRequest
 
+FACTORY_NAME = "sample_algorithm" #subclassing Algorithms should redefine this constant
 
-class Algorithm(Process):
+class Algorithm(object):
+    """
+    This class should be inherited from to allow factory-like construction of Algorithms.
+    When a new Algorithm is added to PyDynDS, add its name to the __new__ constructor.
+    """
+    @staticmethod
+    def factory(desc, *args, **kwargs):
+        subclass_names = {subclass.__name__: subclass for subclass in Algorithm.__subclasses__()}
+        if desc in subclass_names:
+            return subclass_names[desc](*args, **kwargs)
+        raise NotImplementedError("The provided class name is not a subclass of Algorithm.")
+
+
+class SampleAlgorithm(Algorithm, Process):
     """
     This class can be inherited from, but is designed as a sample for understanding and testing.
     All algorithms begin with the initial state of the DynDCOP as a static DCOP instance.
     """
-    def __init__(self, simulator, simulator_request_queue, simulator_response_queue, model_request_queue, model_response_queue, initialDCOP=None):
+    def __init__(self, simulator=None, simulator_request_queue=None, simulator_response_queue=None, model_request_queue=None, model_response_queue=None, initialDCOP=None):
         """
 
         :param simulator:
@@ -66,15 +80,23 @@ class Algorithm(Process):
         The run function is used for every iteration through the DynDCOP.
         Multiple messages or computations may be completed during a single run.This is the entry point to the algorithm.
 
+        See the ActivityDiagram for a visual description of this function's behaviour.
         :return:
         """
-        print("Running...")
-        if not self.run_setup():
-            return
+        while not self.done:
 
-        self.Run()
+            #check that we still have a valid DCOP instance and perform any pre-processing.
+            if not self.run_setup():
+                return
 
-        self.run_teardown()
+            #request update from simulator
+            self.ready()
+
+            #actually run the algorithm
+            self.Run()
+
+            #any post-processing the algorithm needs before next run.
+            self.run_teardown()
 
         print("Done.")
 
@@ -109,7 +131,7 @@ class Algorithm(Process):
         :return:
         """
         #Since this is a sample, we will just send one message.
-        self.send_message(None, None, None)
+        self.send_message('v1','v2', [[1,2,3],[4,5,6],[7,8,9]])
 
     def send_message(self, source, destination, data=None):
         """
@@ -134,7 +156,7 @@ class Algorithm(Process):
         This function verifies that the current view of the DCOP is valid (i.e. not None).
         :return:
         """
-        return self._DCOP_view is None
+        return self._DCOP_view is not None
 
     def read_stats(self):
         """
@@ -155,6 +177,7 @@ class Algorithm(Process):
                 except Exception as e:
                     print(e)
         print("Done read_stats.")
+
     def ready(self):
         """
         Requests the current view of the Model from the Simulator and updates the Algorithm's view.
@@ -172,9 +195,17 @@ class Algorithm(Process):
 
 if __name__ == "__main__":
     #make a new algorithm and run it in a new process.
-    a = Algorithm(None, None, None, None, None, None)
+    model_request_queue = queue.Queue()
+    model_response_queue = queue.Queue()
+    alg_kwargs = {'simulator': None, 'simulator_request_queue': None, 'simulator_response_queue': None,
+                  'model_request_queue': model_request_queue, 'model_response_queue': model_response_queue,
+                  'initialDCOP': None}
+
+    print("Creating algorithm " + str(SampleAlgorithm.__name__))
+    a = Algorithm.factory(SampleAlgorithm.__name__, **alg_kwargs)
     print(a.stats)
     a.run()
+    model_request_queue.put(None)
     time.sleep(.001)
     a.end_stats_queues = True
-    print(a.stats)
+    print(str(model_response_queue.get(block=False)))

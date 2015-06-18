@@ -11,7 +11,7 @@ class Model(object):
     message or computation takes the same time.
     """
 
-    def __init__(self, dyn_dcop=None, algorithm=None, message_delay=0, computation_cost=0):
+    def __init__(self, dyn_dcop=None, algorithm=None, model_request_queue=None, model_response_queue=None, message_delay=0, computation_cost=0):
         """
         Initializes the model.
         :param dyn_dcop: the DynDCOP instance to simulate
@@ -111,7 +111,8 @@ class Model(object):
         :return:
         """
 
-        #TODO: Use synchronization on these variables
+        #TODO: Use message passing with the algorithm's queues
+
         new_messages = self.algorithm.newMessages
         new_computations = self.algorithm.newComputations
 
