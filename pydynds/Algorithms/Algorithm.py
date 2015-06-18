@@ -10,25 +10,12 @@ from pydynds.common import Message, ViewUpdateRequest
 
 FACTORY_NAME = "sample_algorithm" #subclassing Algorithms should redefine this constant
 
-class Algorithm(object):
+class Algorithm(Process):
     """
     This class should be inherited from to allow factory-like construction of Algorithms.
     When a new Algorithm is added to PyDynDS, add its name to the __new__ constructor.
     """
-    @staticmethod
-    def factory(desc, *args, **kwargs):
-        subclass_names = {subclass.__name__: subclass for subclass in Algorithm.__subclasses__()}
-        if desc in subclass_names:
-            return subclass_names[desc](*args, **kwargs)
-        raise NotImplementedError("The provided class name is not a subclass of Algorithm.")
-
-
-class SampleAlgorithm(Algorithm, Process):
-    """
-    This class can be inherited from, but is designed as a sample for understanding and testing.
-    All algorithms begin with the initial state of the DynDCOP as a static DCOP instance.
-    """
-    def __init__(self, simulator=None, simulator_request_queue=None, simulator_response_queue=None, model_request_queue=None, model_response_queue=None, initialDCOP=None):
+    def __init__(self, simulator=None, simulator_request_queue=None, simulator_response_queue=None, model_request_queue=None, model_response_queue=None, control_queue=None, initialDCOP=None):
         """
 
         :param simulator:
@@ -39,18 +26,18 @@ class SampleAlgorithm(Algorithm, Process):
         :param initialDCOP:
         :return:
         """
-        print("Setting up Algorithm...")
         self._DCOP_view = initialDCOP
         self._simulator = simulator #the reference to the simulator so that we can send ready signals to it.
         self._request_queue = simulator_request_queue
         self._response_queue = simulator_response_queue
         self._model_request_queue = model_request_queue
         self._model_response_queue = model_response_queue
+        self.control_queue = control_queue
 
         self.running = False
         self.done = False
 
-        self.end_stats_queues = False #Should be set to True by Model or Simulator to stop responses.
+        self.stop = False #Should be set to True by Model or Simulator to stop responses.
 
         self.stats_lock = RLock()
 
@@ -58,11 +45,64 @@ class SampleAlgorithm(Algorithm, Process):
         self.stats = {'total_messages': 0, 'total_computations': 0, 'last_message': None, 'last_computation': None,
                       'unread_messages': [], 'unread_computations': []}
 
-        print("Done.")
-        print("Setting up model thread...")
         self.model_thread = Thread(target=self.read_stats)
         self.model_thread.start()
-        print("Done.")
+
+        self.simulation_thread = Thread(target=self.run())
+
+    @staticmethod
+    def factory(desc, *args, **kwargs):
+        subclass_names = {subclass.__name__: subclass for subclass in Algorithm.__subclasses__()}
+        if desc in subclass_names:
+            return subclass_names[desc](*args, **kwargs)
+        raise NotImplementedError("The provided class name is not a subclass of Algorithm.")
+
+    def start(self):
+        """
+        Starts the simulation thread.
+        :return:
+        """
+        self.simulation_thread.start()
+
+    def stop(self):
+        """
+        Stops the simulation thread and prepares it for a new run (as if it has never been run before).
+        :return:
+        """
+        pass
+
+    def pause(self):
+        """
+        Pauses the simulation thread, but leaves other queue monitoring threads running.
+        :return:
+        """
+
+    def end(self):
+        """
+        Stops all threads, including queue monitoring threads. Only call this method if you are sure you are done with
+        this class, or will handle thread creation manually.
+        :return:
+        """
+        pass
+
+    def _algorithm_control(self):
+        """
+        This function is responsible for monitoring the request queue for start, stop, and pause requests.
+        :return:
+        """
+        while not self.stop:
+            try:
+                request = self.control_queue.get(block=False)
+                if request == "start":
+                    self.start()
+                elif request == "stop":
+                    self.stop()
+                elif request == "pause":
+                    self.pause()
+            except queue.Empty:
+                continue
+            except AttributeError: #in case the queue is None
+                continue
 
     def preprocessing(self):
         """
@@ -71,8 +111,6 @@ class SampleAlgorithm(Algorithm, Process):
         Users may reimplement this function.
         :return:
         """
-        print("Preprocessing...")
-        print("Done.")
         pass
 
     def run(self):
@@ -124,15 +162,6 @@ class SampleAlgorithm(Algorithm, Process):
         """
         pass
 
-    def Run(self):
-        """
-        User provided run function. This actually runs the algorithm using the current view, and is injected into the run function.
-        Users should override this function to implement new algorithms.
-        :return:
-        """
-        #Since this is a sample, we will just send one message.
-        self.send_message('v1','v2', [[1,2,3],[4,5,6],[7,8,9]])
-
     def send_message(self, source, destination, data=None):
         """
         Represents sending a message from source node `source` to destination node `destination`.
@@ -163,7 +192,7 @@ class SampleAlgorithm(Algorithm, Process):
         Provided for other processes to have access to this Algorithm's stats. Intended to be run in a separate thread.
         :return:
         """
-        while not self.end_stats_queues:
+        while not self.stop:
             print("Getting stats requests...")
             try:
                 self._model_request_queue.get(block=False)
@@ -191,6 +220,35 @@ class SampleAlgorithm(Algorithm, Process):
             self._DCOP_view = self._response_queue.get()
         except Exception as e:
             print(e)
+
+
+class SampleAlgorithm(Algorithm):
+    """
+    This class can be inherited from, but is designed as a sample for understanding and testing.
+    All algorithms begin with the initial state of the DynDCOP as a static DCOP instance.
+    """
+    def __init__(self, simulator=None, simulator_request_queue=None, simulator_response_queue=None, model_request_queue=None, model_response_queue=None, control_queue=None, initialDCOP=None):
+        super(SampleAlgorithm, self).__init(simulator, simulator_request_queue, simulator_response_queue, model_request_queue, model_response_queue, control_queue, initialDCOP)
+
+    def preprocessing(self):
+        """
+        Usually, the algorithm uses this function to build a pseudotree or do any other steps it needs to prior to
+        beginning, like setting up nodes.
+        Users may reimplement this function.
+        :return:
+        """
+        print("Preprocessing...")
+        print("Done.")
+        pass
+
+    def Run(self):
+        """
+        User provided run function. This actually runs the algorithm using the current view, and is injected into the run function.
+        Users should override this function to implement new algorithms.
+        :return:
+        """
+        #Since this is a sample, we will just send one message.
+        self.send_message('v1','v2', [[1,2,3],[4,5,6],[7,8,9]])
 
 
 if __name__ == "__main__":
