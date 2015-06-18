@@ -27,3 +27,4 @@ def main(algorithm_name, message_delay, computation_delay, dyndcop_filename):
 
 if __name__ == "__main__":
     #read args from command line
+    pass
