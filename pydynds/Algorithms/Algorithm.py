@@ -1,3 +1,6 @@
+from common.SimulatorMessages import ViewUpdateRequest
+from common.SimulatorMessages import request_messages
+
 __author__ = 'Victor Szczepanski'
 
 import queue
@@ -6,7 +9,7 @@ from multiprocessing import Process
 import copy
 import time
 
-from pydynds.common import Message, ViewUpdateRequest
+from common import Message
 
 FACTORY_NAME = "sample_algorithm" #subclassing Algorithms should redefine this constant
 
@@ -48,7 +51,10 @@ class Algorithm(Process):
         self.model_thread = Thread(target=self.read_stats)
         self.model_thread.start()
 
-        self.simulation_thread = Thread(target=self.run())
+        self.control_thread = Thread(target=self._algorithm_control)
+        self.control_thread.start()
+
+        self.simulation_thread = Thread(target=self.run)
 
     @staticmethod
     def factory(desc, *args, **kwargs):
@@ -62,7 +68,9 @@ class Algorithm(Process):
         Starts the simulation thread.
         :return:
         """
+        print("Starting Algorithm...")
         self.simulation_thread.start()
+        print("Started.")
 
     def stop(self):
         """
@@ -93,11 +101,13 @@ class Algorithm(Process):
         while not self.stop:
             try:
                 request = self.control_queue.get(block=False)
-                if request == "start":
+                print("Got request: " + str(request))
+                if request is request_messages['START']:
+                    print("Got start request.")
                     self.start()
-                elif request == "stop":
+                elif request is request_messages['STOP']:
                     self.stop()
-                elif request == "pause":
+                elif request is request_messages['PAUSE']:
                     self.pause()
             except queue.Empty:
                 continue
@@ -121,19 +131,24 @@ class Algorithm(Process):
         See the ActivityDiagram for a visual description of this function's behaviour.
         :return:
         """
+        print("Start of Algorithm run.")
         while not self.done:
 
             #check that we still have a valid DCOP instance and perform any pre-processing.
-            if not self.run_setup():
-                return
+            print("Setup.")
+            self.run_setup()
+                #return
 
             #request update from simulator
-            self.ready()
+            print("Ready.")
+            #self.ready()
 
             #actually run the algorithm
+            print("Running...")
             self.Run()
 
             #any post-processing the algorithm needs before next run.
+            print("Tearing down...")
             self.run_teardown()
 
         print("Done.")
@@ -172,6 +187,7 @@ class Algorithm(Process):
         :param destination:
         :return new_message: the Message to be sent to the destination.
         """
+        print("Sending message.")
         new_message = Message.Message(source, destination, data)
         with self.stats_lock:
             self.stats['total_messages'] += 1
@@ -193,7 +209,7 @@ class Algorithm(Process):
         :return:
         """
         while not self.stop:
-            print("Getting stats requests...")
+            #print("Getting stats requests...")
             try:
                 self._model_request_queue.get(block=False)
             except queue.Empty:
@@ -212,8 +228,9 @@ class Algorithm(Process):
         Requests the current view of the Model from the Simulator and updates the Algorithm's view.
         :return:
         """
+        #TODO: Handle errors more transparently, and do not block indefinetly.
         try:
-            self._request_queue.put(ViewUpdateRequest.ViewUpdateRequest())
+            self._request_queue.put(ViewUpdateRequest())
         except Exception as e:
             print(e)
         try:
@@ -228,7 +245,7 @@ class SampleAlgorithm(Algorithm):
     All algorithms begin with the initial state of the DynDCOP as a static DCOP instance.
     """
     def __init__(self, simulator=None, simulator_request_queue=None, simulator_response_queue=None, model_request_queue=None, model_response_queue=None, control_queue=None, initialDCOP=None):
-        super(SampleAlgorithm, self).__init(simulator, simulator_request_queue, simulator_response_queue, model_request_queue, model_response_queue, control_queue, initialDCOP)
+        super(SampleAlgorithm, self).__init__(simulator, simulator_request_queue, simulator_response_queue, model_request_queue, model_response_queue, control_queue, initialDCOP)
 
     def preprocessing(self):
         """
@@ -247,6 +264,7 @@ class SampleAlgorithm(Algorithm):
         Users should override this function to implement new algorithms.
         :return:
         """
+        print("Beginning SampleAlgorithm...")
         #Since this is a sample, we will just send one message.
         self.send_message('v1','v2', [[1,2,3],[4,5,6],[7,8,9]])
 

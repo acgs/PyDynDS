@@ -1,3 +1,5 @@
+
+
 __author__ = 'Victor Szczepanski'
 
 """
@@ -7,7 +9,7 @@ The main function handles starting up the simulator.
 
 import argparse
 
-from pydynds.SimulationController import SimulationController
+
 
 class PyDynDS(object):
 
@@ -37,7 +39,7 @@ class PyDynDS(object):
 
         :return:
         """
-        self.sim_controller = SimulationController(algorithm_name, message_delay, computation_delay, dyndcop)
+        self.sim_controller = SimulationController.SimulationController(algorithm_name, message_delay, computation_delay, dyndcop)
 
     def make_CLI(self):
         """
