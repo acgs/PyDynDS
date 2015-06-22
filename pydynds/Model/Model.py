@@ -1,14 +1,11 @@
-import copy
-from queue import Empty
 from threading import Thread
 
 from common.SimulatorMessages import request_messages
+from common.pydyndsProcess import pydyndsProcess
 
 __author__ = 'Victor Szczepanski'
 
-from multiprocessing import Process
-
-class Model(Process):
+class Model(pydyndsProcess):
     """
     Model defines the current state of the DynDCOP. It exposes several functions for interacting with the model.
     This object is thread-safe; however, it is not intended to be modified by external operations.
@@ -19,7 +16,7 @@ class Model(Process):
     message or computation takes the same time.
     """
 
-    def __init__(self, dyn_dcop=None, algorithm_input_queue=None, algorithm_output_queue=None, model_request_queue=None, model_response_queue=None, message_delay=0, computation_cost=0):
+    def __init__(self, dyn_dcop=None, algorithm_input_queue=None, algorithm_output_queue=None, model_request_queue=None, model_response_queue=None, model_message_event=None, algorithm_message_event=None, message_delay=0, computation_cost=0):
         """
         Initializes the model.
         :param dyn_dcop: the DynDCOP instance to simulate
@@ -29,15 +26,15 @@ class Model(Process):
         TODO: Mark fields as synchronized
         :return:
         """
+        super().__init__(model_request_queue, model_response_queue, model_message_event)
+        assert model_message_event is not algorithm_message_event
         self._dynDCOP = dyn_dcop
         self._algorithm_input_queue = algorithm_input_queue
         self._algorithm_output_queue = algorithm_output_queue
-        self._model_request_queue = model_request_queue
-        self._model_response_queue = model_response_queue
+        self._algorithm_message_event = algorithm_message_event
 
         self._running = False
         self._finished = False
-        self._stop = False
 
         self.currentDCOP = None #TODO: init with initial state of DynDCOP.
         self._currentCycle = 0
@@ -48,13 +45,7 @@ class Model(Process):
         self.messageDelay = message_delay
         self.computationCost = computation_cost
 
-        #Set up communication thread
-        print("Setting up model communication thread...")
-        self.response_thread = Thread(target=self._model_control)
-        self.response_thread.start()
-        print("Set up model communication thread.")
-
-        self.model_thread = Thread(target=self.run)
+        self.simulation_thread = Thread(target=self.run)
 
         print("Done setting up Model.")
 
@@ -72,7 +63,7 @@ class Model(Process):
 
     @algorithm_input_queue.setter
     def algorithm_input_queue(self, new_algorithm=None):
-        raise ValueError("algorithm_input_queue is protected in Model. Change the setter property to allow modifications.")
+        raise ValueError("algorithm_control_input_queue is protected in Model. Change the setter property to allow modifications.")
 
     @property
     def algorithm_output_queue(self):
@@ -80,7 +71,7 @@ class Model(Process):
 
     @algorithm_output_queue.setter
     def algorithm_output_queue(self, new_algorithm=None):
-        raise ValueError("algorithm_output_queue is protected in Model. Change the setter property to allow modifications.")
+        raise ValueError("algorithm_control_output_queue is protected in Model. Change the setter property to allow modifications.")
 
     @property
     def running(self):
@@ -122,26 +113,16 @@ class Model(Process):
     def lastComputationID(self, new_id=0):
         raise ValueError("lastComputationID is protected in Model. Change the setter property to allow modifications.")
 
-    def _model_control(self):
+    def _special_control(self, request):
         """
-        This function is responsible for monitoring the request queue for start, stop, and pause requests.
-        :return:
+        Overrides pydyndsProcess._special_control.
+        :param request: The incoming request.
+        :return bool: True if request handled. Else False.
         """
-        while not self._stop:
-            try:
-                request = self._model_request_queue.get(block=False)
-                if request is request_messages['START']:
-                    self.start()
-                elif request is request_messages['STOP']:
-                    self.stop()
-                elif request is request_messages['PAUSE']:
-                    self.pause()
-                elif request is request_messages['CURRENT_STATE']:
-                    self._model_response_queue.put(copy.deepcopy(self.currentDCOP)) #TODO: We should attach more information and maybe let any model updates complete before sending this.
-            except Empty:
-                continue
-            except AttributeError: #in case the queue is None
-                continue
+        if request is request_messages['CURRENT_STATE']:
+            self._output_queue.put(self.currentDCOP)
+            return True
+        return False
 
     def run(self):
         """
@@ -153,17 +134,16 @@ class Model(Process):
         """
         self._running = True
         self._finished = False
+        #TODO: Replace boolean exit flags with events that pydyndsProcess can signal.
         while self._running:
             self._update()
 
-    def start(self):
-        pass
+        print("Exiting model run...")
 
-    def stop(self):
-        pass
-
-    def pause(self):
-        pass
+    def pre_stop(self):
+        print("pre_stop Model.")
+        self._stop = True
+        self._running = False
 
     def _update(self):
         """
@@ -172,26 +152,33 @@ class Model(Process):
         """
 
         #TODO: Use message passing with the algorithm's queues
+        print("Model Update!")
+        print("Number of pending requests to algorithm: " + str(self._algorithm_input_queue.qsize()))
+        self._algorithm_input_queue.put(request_messages['STATS'])
+        self._algorithm_message_event.set()
+        new_messages = self._algorithm_output_queue.get()
+        print("Got response from algorithm: " + str(new_messages))
+        #new_computations = self.algorithm.newComputations
 
-        new_messages = self.algorithm.newMessages
-        new_computations = self.algorithm.newComputations
-
-        message_time = self._compute_messages_time(new_messages)
-        computation_time = self._compute_computations_time(new_computations)
+        #message_time = self._compute_messages_time(new_messages)
+        #computation_time = self._compute_computations_time(new_computations)
 
         #TODO: store and calculate stats
 
         #advance model by greater of message cost or computation cost
 
-        self.currentCycle = max(message_time, computation_time) # This allows computations to be parallel to eachother and messages
+        #self.currentCycle = max(message_time, computation_time) # This allows computations to be parallel to eachother and messages
 
         #Assumption: self.dynDCOP orders dcops by start cycle.
         if self._finished is not True:
+            pass
+            """
             for dcop in self.dynDCOP:
                 if dcop.startCyle > self.currentCycle:
                     self.currentDCOP = dcop
                     if dcop.startCyle < self.currentCycle:
                         self._finished = True
+            """
 
     def _compute_messages_time(self, new_messages=()):
         """

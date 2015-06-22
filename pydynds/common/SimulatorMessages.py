@@ -13,5 +13,5 @@ class ViewUpdateRequest(object):
         self.timestamp = timestamp
 
 
-request_messages = {'STOP':0, 'START':1, 'PAUSE':2, 'RESUME':3, 'CURRENT_STATE':4} # Enum('RequestMessages', 'STOP START PAUSE RESUME CURRENT_STATE')
+request_messages = {'STOP': 0, 'START': 1, 'PAUSE': 2, 'RESUME': 3, 'CURRENT_STATE': 4, 'SUCCESS': 5, 'STATS':6} # Enum('RequestMessages', 'STOP START PAUSE RESUME CURRENT_STATE')
 

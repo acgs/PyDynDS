@@ -1,46 +1,59 @@
+from multiprocessing import Event
+
 from common.SimulatorMessages import ViewUpdateRequest
+from common.pydyndsProcess import pydyndsProcess
 from common.SimulatorMessages import request_messages
+from common import Message
 
 __author__ = 'Victor Szczepanski'
 
 import queue
 from threading import Thread, RLock
-from multiprocessing import Process
 import copy
 import time
 
-from common import Message
 
-FACTORY_NAME = "sample_algorithm" #subclassing Algorithms should redefine this constant
 
-class Algorithm(Process):
+class Algorithm(pydyndsProcess):
     """
     This class should be inherited from to allow factory-like construction of Algorithms.
     When a new Algorithm is added to PyDynDS, add its name to the __new__ constructor.
-    """
-    def __init__(self, simulator=None, simulator_request_queue=None, simulator_response_queue=None, model_request_queue=None, model_response_queue=None, control_queue=None, initialDCOP=None):
-        """
 
-        :param simulator:
-        :param simulator_request_queue: a multiprocessing.Queue used for sending requests to the simulator
-        :param simulator_response_queue: a multiprocessing.Queue used for reading responses from the simulator
-        :param model_request_queue: a multiprocessing.Queue used to read requests from a model for stats
-        :param model_response_queue: a multiprocessing.Queue used for sending stats to the model.
-        :param initialDCOP:
+    The pausing feature, weakly provided by pydyndsProcess, is implemented during the sendMessage and doComputation
+    functions by acquiring a shared lock.
+    """
+    def __init__(self, algorithm_input_queue=None, algorithm_output_queue=None,
+                 simulator_input_queue=None, simulator_output_queue=None, model_input_queue=None,
+                 model_output_queue=None, simulator_message_event=None, model_message_event=None,
+                 controller_message_event=None, initialDCOP=None):
+        """
+        :param algorithm_input_queue: a multiprocessing.Queue used for receiving control requests from controller.
+        :param algorithm_output_queue: a multiprocessing.Queue used for responding to requests from controller.
+        :param simulator_input_queue: a multiprocessing.Queue used for sending requests to the simulator
+        :param simulator_output_queue: a multiprocessing.Queue used for reading responses from the simulator
+        :param model_input_queue: a multiprocessing.Queue used to read requests from a model for stats
+        :param model_output_queue: a multiprocessing.Queue used for sending stats to the model.
+        :param simulator_message_event: a multiprocessing.Event used for signaling the simulator that a new request is pending.
+        :param model_message_event: a multiprocessing.Event used to notify the algorithm that a new request is pending.
+        :param controller_message_event: a multiprocessing.Event used to notify the algorithm that a new request is pending.
+        :param initialDCOP: the initial state of the DynDCOP.
         :return:
         """
+        super().__init__(algorithm_input_queue, algorithm_output_queue, controller_message_event)
         self._DCOP_view = initialDCOP
-        self._simulator = simulator #the reference to the simulator so that we can send ready signals to it.
-        self._request_queue = simulator_request_queue
-        self._response_queue = simulator_response_queue
-        self._model_request_queue = model_request_queue
-        self._model_response_queue = model_response_queue
-        self.control_queue = control_queue
+
+        self._simulator_input_queue = simulator_input_queue
+        self._simulator_output_queue = simulator_output_queue
+        self._simulator_message_event = simulator_message_event #Used to notify simulator that there is a request pending in simulator_control_input_queue.
+
+        self._model_input_queue = model_input_queue
+        self._model_output_queue = model_output_queue
+        self._model_message_event = model_message_event #Used to receive notifications from model that there is a request in model_control_input_queue.
 
         self.running = False
         self.done = False
 
-        self.stop = False #Should be set to True by Model or Simulator to stop responses.
+        self._stop = False #Should be set to True by Model or Simulator to stop responses.
 
         self.stats_lock = RLock()
 
@@ -48,11 +61,9 @@ class Algorithm(Process):
         self.stats = {'total_messages': 0, 'total_computations': 0, 'last_message': None, 'last_computation': None,
                       'unread_messages': [], 'unread_computations': []}
 
-        self.model_thread = Thread(target=self.read_stats)
-        self.model_thread.start()
-
-        self.control_thread = Thread(target=self._algorithm_control)
-        self.control_thread.start()
+        #Start thread to handle incoming requests from model
+        self.model_request_thread = Thread(target=self.model_request_handler)
+        self.model_request_thread.start()
 
         self.simulation_thread = Thread(target=self.run)
 
@@ -63,27 +74,34 @@ class Algorithm(Process):
             return subclass_names[desc](*args, **kwargs)
         raise NotImplementedError("The provided class name is not a subclass of Algorithm.")
 
-    def start(self):
+    def model_request_handler(self):
         """
-        Starts the simulation thread.
+        Handles waiting for requests on the model i/o queues.Intended to be run in a thread.
+
+        Accepted request types are request_messages['STATS'].
+
+        May implement dependency injection if needed.
         :return:
         """
-        print("Starting Algorithm...")
-        self.simulation_thread.start()
-        print("Started.")
+        while not self._stop:
+            try:
+                if not self._model_message_event.wait(1):  # Wait for 1 second for a request from model
+                    continue
+                request = self._model_input_queue.get(block=False)
+                if request is request_messages['STATS']:
+                    self._model_output_queue.put(self.get_stats())
+                else:
+                    raise ValueError("Model request " + str(request) + " not valid.")
+            except queue.Empty:
+                continue
 
-    def stop(self):
+    def pre_stop(self):
         """
         Stops the simulation thread and prepares it for a new run (as if it has never been run before).
         :return:
         """
-        pass
-
-    def pause(self):
-        """
-        Pauses the simulation thread, but leaves other queue monitoring threads running.
-        :return:
-        """
+        print("Stopping Algorithm.")
+        self.done = True
 
     def end(self):
         """
@@ -92,27 +110,6 @@ class Algorithm(Process):
         :return:
         """
         pass
-
-    def _algorithm_control(self):
-        """
-        This function is responsible for monitoring the request queue for start, stop, and pause requests.
-        :return:
-        """
-        while not self.stop:
-            try:
-                request = self.control_queue.get(block=False)
-                print("Got request: " + str(request))
-                if request is request_messages['START']:
-                    print("Got start request.")
-                    self.start()
-                elif request is request_messages['STOP']:
-                    self.stop()
-                elif request is request_messages['PAUSE']:
-                    self.pause()
-            except queue.Empty:
-                continue
-            except AttributeError: #in case the queue is None
-                continue
 
     def preprocessing(self):
         """
@@ -132,33 +129,32 @@ class Algorithm(Process):
         :return:
         """
         print("Start of Algorithm run.")
+        #TODO: Replace boolean exit flags with events that pydyndsProcess can signal.
         while not self.done:
-
+            print("Algorithm running!")
             #check that we still have a valid DCOP instance and perform any pre-processing.
-            print("Setup.")
-            self.run_setup()
-                #return
+            with self.pause_lock:
+                if not self.run_setup():
+                    return
 
             #request update from simulator
-            print("Ready.")
-            #self.ready()
+            with self.pause_lock:
+                self.ready()
 
             #actually run the algorithm
-            print("Running...")
             self.Run()
 
             #any post-processing the algorithm needs before next run.
-            print("Tearing down...")
-            self.run_teardown()
+            with self.pause_lock:
+                self.run_teardown()
 
-        print("Done.")
+        print("Exiting Algorithm run...")
 
     def run_setup(self):
         """
         Called at beginning of run.
         :return:
         """
-        print("Setting up...")
         self.running = True
 
         if not self.check_input():
@@ -167,7 +163,6 @@ class Algorithm(Process):
             return False
 
         self.preprocessing()
-        print("Done.")
         return True
 
     def run_teardown(self):
@@ -176,6 +171,24 @@ class Algorithm(Process):
         :return:
         """
         pass
+
+    def _send_message(self, source, destination, data=None):
+        """
+        Represents sending a message from source node `source` to destination node `destination`.
+        Constructs a Message to store in various stats.
+
+        Inheriting classes may reimplement this function to define special behaviour.
+        The send_message function is preferred in the API.
+        :param source:
+        :param destination:
+        :param data:
+        :return:
+        """
+        new_message = Message.Message(source, destination, data)
+        with self.stats_lock:
+            self.stats['total_messages'] += 1
+            self.stats['last_message'] = new_message
+            self.stats['unread_messages'].append(new_message)
 
     def send_message(self, source, destination, data=None):
         """
@@ -187,14 +200,8 @@ class Algorithm(Process):
         :param destination:
         :return new_message: the Message to be sent to the destination.
         """
-        print("Sending message.")
-        new_message = Message.Message(source, destination, data)
-        with self.stats_lock:
-            self.stats['total_messages'] += 1
-            self.stats['last_message'] = new_message
-            self.stats['unread_messages'].append(new_message)
-
-        return new_message
+        with self.pause_lock:
+            return self.send_message(source, destination, data)
 
     def check_input(self):
         """
@@ -203,25 +210,26 @@ class Algorithm(Process):
         """
         return self._DCOP_view is not None
 
-    def read_stats(self):
+    def get_stats(self):
+        """
+        returns a copy of this algorithm's current stats.
+        :return:
+        """
+        with self.stats_lock:
+            stats = copy.deepcopy(self.stats)
+        return stats
+
+    def _special_control(self, request):
         """
         Provided for other processes to have access to this Algorithm's stats. Intended to be run in a separate thread.
         :return:
         """
-        while not self.stop:
-            #print("Getting stats requests...")
-            try:
-                self._model_request_queue.get(block=False)
-            except queue.Empty:
-                continue
-            except AttributeError: #in case the queue is None
-                continue
-            with self.stats_lock:
-                try:
-                    self._model_response_queue.put(copy.deepcopy(self.stats)) #We deep copy to decouple the stats.
-                except Exception as e:
-                    print(e)
-        print("Done read_stats.")
+        if request is request_messages['STATS']:
+            print("Got STATS request in Algorithm.")
+            self._output_queue.put(self.get_stats())
+            print("Successfully copied stats!")
+            return True
+        return False
 
     def ready(self):
         """
@@ -230,11 +238,14 @@ class Algorithm(Process):
         """
         #TODO: Handle errors more transparently, and do not block indefinetly.
         try:
-            self._request_queue.put(ViewUpdateRequest())
+            self._simulator_input_queue.put(ViewUpdateRequest())
+            self._simulator_message_event.set()
         except Exception as e:
             print(e)
+
+        # Block waiting on response from simulator.
         try:
-            self._DCOP_view = self._response_queue.get()
+            self._DCOP_view = self._simulator_output_queue.get()
         except Exception as e:
             print(e)
 
@@ -244,8 +255,14 @@ class SampleAlgorithm(Algorithm):
     This class can be inherited from, but is designed as a sample for understanding and testing.
     All algorithms begin with the initial state of the DynDCOP as a static DCOP instance.
     """
-    def __init__(self, simulator=None, simulator_request_queue=None, simulator_response_queue=None, model_request_queue=None, model_response_queue=None, control_queue=None, initialDCOP=None):
-        super(SampleAlgorithm, self).__init__(simulator, simulator_request_queue, simulator_response_queue, model_request_queue, model_response_queue, control_queue, initialDCOP)
+    def __init__(self, algorithm_input_queue=None, algorithm_output_queue=None,
+                 simulator_input_queue=None, simulator_output_queue=None, model_input_queue=None,
+                 model_output_queue=None, simulator_message_event=None, model_message_event=None,
+                 controller_message_event=None, initialDCOP=None):
+
+        super().__init__(algorithm_input_queue, algorithm_output_queue, simulator_input_queue,
+                         simulator_output_queue, model_input_queue, model_output_queue, simulator_message_event,
+                         model_message_event, controller_message_event, initialDCOP)
 
     def preprocessing(self):
         """
@@ -273,15 +290,19 @@ if __name__ == "__main__":
     #make a new algorithm and run it in a new process.
     model_request_queue = queue.Queue()
     model_response_queue = queue.Queue()
-    alg_kwargs = {'simulator': None, 'simulator_request_queue': None, 'simulator_response_queue': None,
+    message_event = Event()
+    alg_kwargs = {'simulator_request_queue': None, 'simulator_response_queue': None,
                   'model_request_queue': model_request_queue, 'model_response_queue': model_response_queue,
-                  'initialDCOP': None}
+                  'message_event': message_event, 'algorithm_control_input_queue': model_request_queue,
+                  'algorithm_control_output_queue': model_response_queue, 'initialDCOP': None}
 
     print("Creating algorithm " + str(SampleAlgorithm.__name__))
     a = Algorithm.factory(SampleAlgorithm.__name__, **alg_kwargs)
     print(a.stats)
     a.run()
-    model_request_queue.put(None)
+    model_request_queue.put(request_messages['STATS'])
+    message_event.set()
     time.sleep(.001)
     a.end_stats_queues = True
+    a._stop_control()
     print(str(model_response_queue.get(block=False)))

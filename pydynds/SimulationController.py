@@ -1,4 +1,4 @@
-from multiprocessing import Queue
+from multiprocessing import Queue, Event
 import time
 
 from Algorithms.Algorithm import Algorithm, SampleAlgorithm
@@ -56,17 +56,17 @@ class SimulationController(object):
 
         # algorithm, simulator, and model are references to the subprocesses spawned by setup.
         self.algorithm = None
-        self.algorithm_input_queue = None
-        self.algorithm_output_queue = None
+        self.algorithm_control_input_queue = None
+        self.algorithm_control_output_queue = None
         self.algorithm_control_queue = None
 
         self.simulator = None
-        self.simulator_input_queue = None
-        self.simulator_output_queue = None
+        self.simulator_control_input_queue = None
+        self.simulator_control_output_queue = None
 
         self.model = None
-        self.model_input_queue = None
-        self.model_output_queue = None
+        self.model_control_input_queue = None
+        self.model_control_output_queue = None
 
         self._init()
 
@@ -82,17 +82,29 @@ class SimulationController(object):
 
         # algorithm, simulator, and model are references to the subprocesses spawned by setup.
         self.algorithm = None
-        self.algorithm_input_queue = Queue()
-        self.algorithm_output_queue = Queue()
-        self.algorithm_control_queue = Queue()
+        self.algorithm_control_input_queue = Queue()
+        self.algorithm_control_output_queue = Queue()
+        self.algorithm_control_message_event = Event()
 
         self.simulator = None
-        self.simulator_input_queue = Queue()
-        self.simulator_output_queue = Queue()
+        self.simulator_control_input_queue = Queue()
+        self.simulator_control_output_queue = Queue()
+        self.simulator_control_message_event = Event()
 
         self.model = None
-        self.model_input_queue = Queue()
-        self.model_output_queue = Queue()
+        self.model_control_input_queue = Queue()
+        self.model_control_output_queue = Queue()
+        self.model_control_message_event = Event()
+
+        #shared message events
+        self.algorithm_model_message_event = Event()
+        self.algorithm_simulator_message_event = Event()
+
+        #component queues
+        self.algorithm_model_input_queue = Queue()
+        self.algorithm_model_output_queue = Queue()
+        self.algorithm_simulator_input_queue = Queue()
+        self.algorithm_simulator_output_queue = Queue()
 
     def setup(self, algorithm_name, dyndcop, message_delay=0, computation_cost=0):
         """
@@ -104,16 +116,20 @@ class SimulationController(object):
             raise InvalidState("Cannot setup a not stopped simulation. Current State: " + str(self.current_state))
 
         print("Making model...")
-        self.model = Model(dyn_dcop=dyndcop, algorithm_input_queue=self.algorithm_input_queue,
-                           algorithm_output_queue=self.algorithm_output_queue,
-                           model_request_queue=self.model_input_queue, model_response_queue=self.model_output_queue,
+        self.model = Model(dyn_dcop=dyndcop, algorithm_input_queue=self.algorithm_model_input_queue,
+                           algorithm_output_queue=self.algorithm_model_output_queue,
+                           model_request_queue=self.model_control_input_queue,
+                           model_response_queue=self.model_control_output_queue,
+                           model_message_event=self.model_control_message_event,
+                           algorithm_message_event=self.algorithm_model_message_event,
                            message_delay=message_delay, computation_cost=computation_cost)
 
         print("Made model.")
         #Get initial state from model to pass to algorithm
         print("Getting initial state of DynDCOP...")
-        self.model_input_queue.put(request_messages['CURRENT_STATE'])
-        dcop = self.model_output_queue.get()
+        self.model_control_input_queue.put(request_messages['CURRENT_STATE'])
+        self.model_control_message_event.set()
+        dcop = self.model_control_output_queue.get()
 
         print("Got state: " + str(dcop))
 
@@ -122,13 +138,19 @@ class SimulationController(object):
         print("Made Simulator.")
 
         print("Making Algorithm...")
-        alg_kwargs = {'simulator': self.simulator, 'simulator_request_queue': self.simulator_input_queue,
-                      'simulator_response_queue': self.simulator_output_queue,
-                      'model_request_queue': self.model_input_queue, 'model_response_queue': self.model_output_queue,
-                      'control_queue': self.algorithm_control_queue,'initialDCOP': dcop}
+        alg_kwargs = {'simulator_message_event': self.algorithm_simulator_message_event,
+                      'simulator_input_queue': self.algorithm_simulator_input_queue,
+                      'simulator_output_queue': self.algorithm_simulator_output_queue,
+                      'model_message_event': self.algorithm_model_message_event,
+                      'model_input_queue': self.algorithm_model_input_queue,
+                      'model_output_queue': self.algorithm_model_output_queue,
+                      'controller_message_event': self.algorithm_control_message_event,
+                      'algorithm_input_queue': self.algorithm_control_input_queue,
+                      'algorithm_output_queue': self.algorithm_control_output_queue,
+                      'initialDCOP': dcop}
         self.algorithm = Algorithm.factory(algorithm_name, **alg_kwargs)
 
-        print("Made Algorithm.")
+        print("Made Algorithm: " + str(type(self.algorithm)))
         self.current_state = SimulationController.states.SETUP
         print("Done with Setup.")
 
@@ -137,8 +159,9 @@ class SimulationController(object):
         We name this function as a getter, rather than a property, since it incurs some inter-process communication.
         :return current stats from the algorithm:
         """
-
-        return self.algorithm.stats
+        self.algorithm_control_input_queue.put(request_messages['STATS'])
+        self.algorithm_control_message_event.set()
+        return self.algorithm_control_output_queue.get()
 
     def start(self):
         """
@@ -152,9 +175,12 @@ class SimulationController(object):
         if self.current_state is not SimulationController.states.SETUP:
             raise InvalidState("Simulation is not setup. Current State: " + str(self.current_state))
 
-        self.model_input_queue.put(request_messages['START'])
-        self.simulator_input_queue.put(request_messages['START'])
-        self.algorithm_control_queue.put(request_messages['START'])
+        self.model_control_input_queue.put(request_messages['START'])
+        self.model_control_message_event.set()
+        self.simulator_control_input_queue.put(request_messages['START'])
+        self.simulator_control_message_event.set()
+        self.algorithm_control_input_queue.put(request_messages['START'])
+        self.algorithm_control_message_event.set()
 
         self.current_state = SimulationController.states.RUNNING
         self.running = True
@@ -169,9 +195,14 @@ class SimulationController(object):
             return
         try:
             # Send stop messages to algorithm, model, and simulator.
-            self.algorithm_input_queue.put(request_messages['STOP'])
-            self.simulator_input_queue.put(request_messages['STOP'])
-            self.model_input_queue.put(request_messages['STOP'])
+            self.algorithm_control_input_queue.put(request_messages['STOP'])
+            print("Sending message event to algorithm from Controller")
+            self.algorithm_control_message_event.set()
+            print(type(self.algorithm).__name__)
+            self.simulator_control_input_queue.put(request_messages['STOP'])
+            self.simulator_control_message_event.set()
+            self.model_control_input_queue.put(request_messages['STOP'])
+            self.model_control_message_event.set()
         except Exception as e:
             print(e)
             return
